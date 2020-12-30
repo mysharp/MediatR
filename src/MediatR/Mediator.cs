@@ -14,7 +14,7 @@ namespace MediatR
     public class Mediator : IMediator
     {
         private readonly ServiceFactory _serviceFactory;
-        private static readonly ConcurrentDictionary<Type, object> _requestHandlers = new ConcurrentDictionary<Type, object>();
+        private static readonly ConcurrentDictionary<Type, RequestHandlerBase> _requestHandlers = new ConcurrentDictionary<Type, RequestHandlerBase>();
         private static readonly ConcurrentDictionary<Type, NotificationHandlerWrapper> _notificationHandlers = new ConcurrentDictionary<Type, NotificationHandlerWrapper>();
 
         /// <summary>
@@ -36,34 +36,37 @@ namespace MediatR
             var requestType = request.GetType();
 
             var handler = (RequestHandlerWrapper<TResponse>)_requestHandlers.GetOrAdd(requestType,
-                t => Activator.CreateInstance(typeof(RequestHandlerWrapperImpl<,>).MakeGenericType(requestType, typeof(TResponse))));
+                t => (RequestHandlerBase)Activator.CreateInstance(typeof(RequestHandlerWrapperImpl<,>).MakeGenericType(requestType, typeof(TResponse))));
 
             return handler.Handle(request, cancellationToken, _serviceFactory);
         }
 
-        public Task<object> Send(object request, CancellationToken cancellationToken = default)
+        public Task<object?> Send(object request, CancellationToken cancellationToken = default)
         {
             if (request == null)
             {
                 throw new ArgumentNullException(nameof(request));
             }
             var requestType = request.GetType();
-            var requestInterfaceType = requestType
-                .GetInterfaces()
-                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
-            var isValidRequest = requestInterfaceType != null;
-
-            if (!isValidRequest)
-            {
-                throw new ArgumentException($"{nameof(request)} does not implement ${nameof(IRequest)}");
-            }
-
-            var responseType = requestInterfaceType.GetGenericArguments()[0];
             var handler = _requestHandlers.GetOrAdd(requestType,
-                t => Activator.CreateInstance(typeof(RequestHandlerWrapperImpl<,>).MakeGenericType(requestType, responseType)));
+                requestTypeKey =>
+                {
+                    var requestInterfaceType = requestTypeKey
+                        .GetInterfaces()
+                        .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IRequest<>));
+                    var isValidRequest = requestInterfaceType != null;
+
+                    if (!isValidRequest)
+                    {
+                        throw new ArgumentException($"{requestType.Name} does not implement {nameof(IRequest)}", nameof(request));
+                    }
+
+                    var responseType = requestInterfaceType!.GetGenericArguments()[0];
+                    return (RequestHandlerBase)Activator.CreateInstance(typeof(RequestHandlerWrapperImpl<,>).MakeGenericType(requestTypeKey, responseType));
+                });
 
             // call via dynamic dispatch to avoid calling through reflection for performance reasons
-            return ((RequestHandlerBase) handler).Handle(request, cancellationToken, _serviceFactory);
+            return handler.Handle(request, cancellationToken, _serviceFactory);
         }
 
         public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
